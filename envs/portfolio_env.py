@@ -42,6 +42,9 @@ class PortfolioEnv(gym.Env):
         "volume_ratio",
         "pe_ttm",
         "pb",
+        "vol",
+        "amount",
+        "natr_14",
     ]
 
     def __init__(

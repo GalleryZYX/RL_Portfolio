@@ -4,7 +4,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 import numpy as np
 import pandas as pd
-from envs.portfolio_env import PortfolioEnv
+from envs.portfolio_env_test import PortfolioEnv
 
 
 def generate_fake_data(n_days=500, n_stocks=5, seed=42):

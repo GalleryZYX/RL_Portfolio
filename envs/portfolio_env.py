@@ -42,9 +42,10 @@ class PortfolioEnv(gym.Env):
         "volume_ratio",
         "pe_ttm",
         "pb",
-        "vol",
-        "amount",
         "natr_14",
+        "gap",
+        "intraday_amp",
+        "close_loc",
     ]
 
     def __init__(
@@ -96,6 +97,15 @@ class PortfolioEnv(gym.Env):
         """Pivot long-panel *df* into dense arrays and forward-fill gaps."""
         df = df.copy()
         df["trade_date"] = pd.to_datetime(df["trade_date"])
+
+        # ---- 从现有量价列衍生尺度不变特征 --------------------------------
+        eps = 1e-8
+        if "gap" in self.feature_cols and "open" in df.columns and "pre_close" in df.columns:
+            df["gap"] = (df["open"] - df["pre_close"]) / (df["pre_close"] + eps)
+        if "intraday_amp" in self.feature_cols and "high" in df.columns and "low" in df.columns:
+            df["intraday_amp"] = (df["high"] - df["low"]) / (df["pre_close"] + eps)
+        if "close_loc" in self.feature_cols and "close" in df.columns:
+            df["close_loc"] = (df["close"] - df["low"]) / (df["high"] - df["low"] + eps)
 
         self.dates = sorted(df["trade_date"].unique())
         self.stocks = sorted(df["ts_code"].unique())

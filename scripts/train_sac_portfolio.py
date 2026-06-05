@@ -17,10 +17,10 @@ import torch
 from stable_baselines3 import SAC
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.callbacks import EvalCallback
-
 sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent))  # scripts/ directory
 from envs.portfolio_env import PortfolioEnv
+from validation_callback import ValidationCallback, split_dataframe_by_date
 
 
 # ---------------------------------------------------------------------------
@@ -46,27 +46,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--window", type=int, default=20,
                         help="Rolling window for z-score normalization.")
     # SAC 超参数
-    parser.add_argument("--total-timesteps", type=int, default=100_000,
+    parser.add_argument("--total-timesteps", type=int, default=300_000,
                         help="Total SAC training timesteps.")
-    parser.add_argument("--learning-rate", type=float, default=3e-4,
+    parser.add_argument("--learning-rate", type=float, default=1e-3,
                         help="Learning rate for all networks.")
     parser.add_argument("--buffer-size", type=int, default=100_000,
                         help="Replay buffer size.")
-    parser.add_argument("--batch-size", type=int, default=256,
+    parser.add_argument("--batch-size", type=int, default=128,
                         help="Mini-batch size for gradient steps.")
     parser.add_argument("--gamma", type=float, default=0.99,
                         help="Discount factor.")
     parser.add_argument("--tau", type=float, default=0.005,
                         help="Soft update coefficient for target networks.")
-    parser.add_argument("--ent-coef", type=str, default="auto",
-                        help="Entropy coefficient: 'auto' or a float value.")
-    parser.add_argument("--learning-starts", type=int, default=2000,
+    parser.add_argument("--ent-coef", type=float, default=0.05,
+                        help="Entropy coefficient (higher = more exploration).")
+    parser.add_argument("--learning-starts", type=int, default=5000,
                         help="Collect this many steps before starting gradient updates.")
     parser.add_argument("--train-freq", type=int, default=1,
                         help="Update the model every N environment steps.")
     parser.add_argument("--gradient-steps", type=int, default=1,
                         help="Gradient steps per training call.")
-    parser.add_argument("--net-arch", type=str, default="256,256",
+    parser.add_argument("--net-arch", type=str, default="64,32",
                         help="Comma-separated hidden layer sizes for actor/critic.")
     # 训练流程
     parser.add_argument("--seed", type=int, default=42,
@@ -77,6 +77,10 @@ def parse_args() -> argparse.Namespace:
                         help="Evaluate every N timesteps during training.")
     parser.add_argument("--eval-episodes", type=int, default=3,
                         help="Number of evaluation episodes.")
+    parser.add_argument("--val-start", type=str, default="2025-01-01",
+                        help="Start date for validation split (YYYY-MM-DD).")
+    parser.add_argument("--early-stopping-patience", type=int, default=10,
+                        help="Stop if validation doesn't improve for N consecutive evals.")
     parser.add_argument("--models-dir", type=Path, default=Path("models"),
                         help="Directory for saved models and normalizers.")
     parser.add_argument("--log-dir", type=Path, default=Path("runs"),
@@ -189,7 +193,6 @@ def main() -> None:
 
     # 解析网络结构
     net_arch = [int(x.strip()) for x in args.net_arch.split(",")]
-    ent_coef = args.ent_coef if args.ent_coef == "auto" else float(args.ent_coef)
 
     # 输出目录
     args.models_dir.mkdir(parents=True, exist_ok=True)
@@ -197,13 +200,20 @@ def main() -> None:
 
     # ---- 加载数据 ---------------------------------------------------------
     print(f"Loading training data: {args.train_data}")
-    df_train = pd.read_csv(args.train_data)
-    n_stocks = df_train["ts_code"].nunique()
-    n_days = df_train["trade_date"].nunique()
+    df_full = pd.read_csv(args.train_data)
+    n_stocks = df_full["ts_code"].nunique()
+    n_days = df_full["trade_date"].nunique()
     print(f"  {n_stocks} stocks, {n_days} trading days")
 
+    # ---- 时序切分训练/验证集 -----------------------------------------------
+    df_train, df_val = split_dataframe_by_date(df_full, val_start=args.val_start)
+    n_train_days = df_train["trade_date"].nunique()
+    n_val_days = df_val["trade_date"].nunique()
+    print(f"  Train: {n_train_days} days (before {args.val_start})")
+    print(f"  Val:   {n_val_days} days (from {args.val_start})")
+
     # ---- 创建环境 ---------------------------------------------------------
-    # 训练环境（VecNormalize 负责观测/奖励归一化，training=True）
+    # 训练环境
     train_env_fn = make_env(df_train,
                             initial_cash=args.initial_cash,
                             commission=args.commission,
@@ -214,19 +224,20 @@ def main() -> None:
         training=True,
     )
 
-    # 评估环境（独立实例，避免 EvalCallback 污染训练 VecNormalize 统计量）
-    eval_env_fn = make_env(df_train,
+    # 验证环境（独立实例，用于 ValidationCallback 早停判断）
+    val_env_fn = make_env(df_val,
                            initial_cash=args.initial_cash,
                            commission=args.commission,
                            window=args.window)
-    eval_vec_env = DummyVecEnv([eval_env_fn])
-    eval_vec_norm = VecNormalize(
-        eval_vec_env, norm_obs=True, norm_reward=True, clip_obs=10.0,
-        training=True,  # 评估期间独立维护统计量
+    val_vec_env = DummyVecEnv([val_env_fn])
+    val_vec_norm = VecNormalize(
+        val_vec_env, norm_obs=True, norm_reward=True, clip_obs=10.0,
+        training=True,
     )
 
     print(f"Observation space: {train_vec_env.observation_space}")
     print(f"Action space:      {train_vec_env.action_space}")
+    print(f"Entropy coef:      {args.ent_coef}")
 
     # ---- 创建 SAC 模型 ----------------------------------------------------
     model = SAC(
@@ -237,11 +248,14 @@ def main() -> None:
         batch_size=args.batch_size,
         gamma=args.gamma,
         tau=args.tau,
-        ent_coef=ent_coef,
+        ent_coef=args.ent_coef,
         learning_starts=args.learning_starts,
         train_freq=args.train_freq,
         gradient_steps=args.gradient_steps,
-        policy_kwargs={"net_arch": net_arch},
+        policy_kwargs={
+            "net_arch": net_arch,
+            "optimizer_kwargs": {"weight_decay": 1e-4},
+        },
         seed=args.seed,
         device=device,
         tensorboard_log=str(args.log_dir),
@@ -254,18 +268,21 @@ def main() -> None:
         idx = torch.device(device).index or 0
         print(f"GPU: {torch.cuda.get_device_name(idx)}")
 
-    # ---- 训练回调（使用独立 eval 环境）-----------------------------------
-    callback = EvalCallback(
-        eval_vec_norm,
+    # ---- 训练回调（验证集 + 早停）-----------------------------------------
+    callback = ValidationCallback(
+        val_vec_norm,
         best_model_save_path=str(args.models_dir / "sac_best"),
-        log_path=str(args.log_dir),
+        log_path=str(args.log_dir / "val"),
         eval_freq=args.eval_freq,
         n_eval_episodes=args.eval_episodes,
         deterministic=True,
+        patience=args.early_stopping_patience,
+        min_delta=0.001,
     )
 
     # ---- 训练 -------------------------------------------------------------
     print(f"\nStarting training for {args.total_timesteps:,} timesteps ...")
+    print(f"Early stopping patience: {args.early_stopping_patience} evaluations")
     model.learn(
         total_timesteps=args.total_timesteps,
         tb_log_name="sac_portfolio",
@@ -301,15 +318,36 @@ def main() -> None:
                                 initial_cash=args.initial_cash,
                                 commission=args.commission,
                                 window=args.window)
-        test_avg, test_all = evaluate_portfolio(model, train_vec_norm, test_env_fn, n_episodes=1)
+        N_TEST_EPISODES = 5
+        test_avg, test_all = evaluate_portfolio(model, train_vec_norm, test_env_fn,
+                                                 n_episodes=N_TEST_EPISODES)
         for k, v in test_avg.items():
             print(f"  {k}: {v:.4f}" if isinstance(v, float) and abs(v) < 100 else f"  {k}: {v:,.2f}")
+        # 报告 episode 间标准差
+        returns_across = [m["total_return"] for m in test_all]
+        print(f"  return_std_({N_TEST_EPISODES}ep): {np.std(returns_across):.4f}")
+
+        # ---- 子期间分析（Q1 vs Q2）----------------------------------------
+        df_test_dt = df_test.copy()
+        df_test_dt["trade_date"] = pd.to_datetime(df_test_dt["trade_date"])
+        q1_cutoff = pd.to_datetime("2026-04-01")
+        for period_name, period_df in [
+            ("2026 Q1 (Jan-Mar)", df_test_dt[df_test_dt["trade_date"] < q1_cutoff]),
+            ("2026 Q2 (Apr-May)", df_test_dt[df_test_dt["trade_date"] >= q1_cutoff]),
+        ]:
+            if period_df["trade_date"].nunique() == 0:
+                continue
+            period_fn = make_env(period_df, initial_cash=args.initial_cash,
+                                 commission=args.commission, window=args.window)
+            period_avg, _ = evaluate_portfolio(model, train_vec_norm, period_fn, n_episodes=1)
+            print(f"  [{period_name}] return={period_avg['total_return']:.4f}  "
+                  f"sharpe={period_avg['sharpe_ratio']:.4f}  max_dd={period_avg['max_drawdown']:.4f}")
     else:
         print(f"\nTest data not found at {args.test_data}, skipping out-of-sample eval.")
 
     print(f"\nTensorBoard logs: {args.log_dir.resolve()}")
     train_vec_env.close()
-    eval_vec_env.close()
+    val_vec_env.close()
 
 
 if __name__ == "__main__":

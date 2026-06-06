@@ -102,9 +102,7 @@ class ValidationCallback(EvalCallback):
                     f"  Best validation reward: {self.best_val_reward:.4f} @ step {self.best_step}"
                 )
                 self._stopped_early = True
-                # 通知 SB3 停止训练
-                if self.model is not None:
-                    self.model.stop_training = True
+                return False  # 返回 False 通知 SB3 停止训练
 
         return result
 

@@ -48,7 +48,7 @@ def parse_args() -> argparse.Namespace:
     # SAC 超参数
     parser.add_argument("--total-timesteps", type=int, default=300_000,
                         help="Total SAC training timesteps.")
-    parser.add_argument("--learning-rate", type=float, default=1e-3,
+    parser.add_argument("--learning-rate", type=float, default=3e-4,
                         help="Learning rate for all networks.")
     parser.add_argument("--buffer-size", type=int, default=100_000,
                         help="Replay buffer size.")
@@ -58,7 +58,7 @@ def parse_args() -> argparse.Namespace:
                         help="Discount factor.")
     parser.add_argument("--tau", type=float, default=0.005,
                         help="Soft update coefficient for target networks.")
-    parser.add_argument("--ent-coef", type=float, default=0.05,
+    parser.add_argument("--ent-coef", type=float, default=0.01,
                         help="Entropy coefficient (higher = more exploration).")
     parser.add_argument("--learning-starts", type=int, default=5000,
                         help="Collect this many steps before starting gradient updates.")
@@ -66,7 +66,7 @@ def parse_args() -> argparse.Namespace:
                         help="Update the model every N environment steps.")
     parser.add_argument("--gradient-steps", type=int, default=1,
                         help="Gradient steps per training call.")
-    parser.add_argument("--net-arch", type=str, default="64,32",
+    parser.add_argument("--net-arch", type=str, default="128,64",
                         help="Comma-separated hidden layer sizes for actor/critic.")
     # 训练流程
     parser.add_argument("--seed", type=int, default=42,

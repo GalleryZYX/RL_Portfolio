@@ -33,10 +33,10 @@ def parse_args() -> argparse.Namespace:
     )
     # 数据
     parser.add_argument("--train-data", type=Path,
-                        default=Path("data/rl_train_data_2023_2025.csv"),
+                        default=Path("data/rl_train_data_2023_2025_enhanced.csv"),
                         help="Path to training CSV (long-panel format).")
     parser.add_argument("--test-data", type=Path,
-                        default=Path("data/rl_test_data_2026_now.csv"),
+                        default=Path("data/rl_test_data_2026_now_enhanced.csv"),
                         help="Path to test CSV for out-of-sample evaluation.")
     # 环境
     parser.add_argument("--initial-cash", type=float, default=1_000_000.0,

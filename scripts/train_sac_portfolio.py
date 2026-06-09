@@ -33,10 +33,10 @@ def parse_args() -> argparse.Namespace:
     )
     # 数据
     parser.add_argument("--train-data", type=Path,
-                        default=Path("data/rl_train_data_2023_2025_enhanced.csv"),
+                        default=Path("data/rl_train_data_2023_2025.csv"),
                         help="Path to training CSV (long-panel format).")
     parser.add_argument("--test-data", type=Path,
-                        default=Path("data/rl_test_data_2026_now_enhanced.csv"),
+                        default=Path("data/rl_test_data_2026_now.csv"),
                         help="Path to test CSV for out-of-sample evaluation.")
     # 环境
     parser.add_argument("--initial-cash", type=float, default=1_000_000.0,
@@ -45,6 +45,10 @@ def parse_args() -> argparse.Namespace:
                         help="Per-side transaction cost rate.")
     parser.add_argument("--window", type=int, default=20,
                         help="Rolling window for z-score normalization.")
+    parser.add_argument("--drawdown-penalty", type=float, default=0.1,
+                        help="Penalty coefficient for portfolio drawdown.")
+    parser.add_argument("--concentration-penalty", type=float, default=0.05,
+                        help="Penalty coefficient for weight concentration (HHI).")
     # SAC 超参数
     parser.add_argument("--total-timesteps", type=int, default=300_000,
                         help="Total SAC training timesteps.")
@@ -100,7 +104,9 @@ def resolve_device(requested: str) -> str:
 
 
 def make_env(df, initial_cash: float = 1_000_000.0,
-             commission: float = 0.001, window: int = 20):
+             commission: float = 0.001, window: int = 20,
+             drawdown_penalty: float = 0.0,
+             concentration_penalty: float = 0.0):
     """返回一个可调用对象，用于 DummyVecEnv。"""
     def _init():
         env = PortfolioEnv(
@@ -108,6 +114,8 @@ def make_env(df, initial_cash: float = 1_000_000.0,
             initial_cash=initial_cash,
             commission=commission,
             window=window,
+            drawdown_penalty=drawdown_penalty,
+            concentration_penalty=concentration_penalty,
         )
         env = Monitor(env)
         return env

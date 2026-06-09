@@ -34,6 +34,7 @@ class PortfolioEnv(gym.Env):
     # Scale-invariant defaults — these avoid feeding raw non-stationary
     # prices into the network and stay in reasonable numeric ranges.
     _DEFAULT_FEATURES = [
+        # 量价与技术
         "pct_chg",
         "momentum_5",
         "volatility_10",
@@ -46,6 +47,9 @@ class PortfolioEnv(gym.Env):
         "gap",
         "intraday_amp",
         "close_loc",
+        # 价格隐含情感代理（Phase B v2）
+        "overnight_gap_abs",
+        "intraday_momentum",
     ]
 
     def __init__(
@@ -56,6 +60,8 @@ class PortfolioEnv(gym.Env):
         initial_cash=1_000_000.0,
         commission=0.001,
         window=20,
+        drawdown_penalty=0.0,
+        concentration_penalty=0.0,
     ):
         super().__init__()
 
@@ -63,6 +69,8 @@ class PortfolioEnv(gym.Env):
         self.initial_cash = initial_cash
         self.commission = commission
         self.window = max(window, 2)
+        self.drawdown_penalty = drawdown_penalty
+        self.concentration_penalty = concentration_penalty
 
         # ---- resolve feature columns ---------------------------------
         if feature_cols is None:
@@ -106,6 +114,10 @@ class PortfolioEnv(gym.Env):
             df["intraday_amp"] = (df["high"] - df["low"]) / (df["pre_close"] + eps)
         if "close_loc" in self.feature_cols and "close" in df.columns:
             df["close_loc"] = (df["close"] - df["low"]) / (df["high"] - df["low"] + eps)
+        if "overnight_gap_abs" in self.feature_cols and "open" in df.columns and "pre_close" in df.columns:
+            df["overnight_gap_abs"] = (df["open"] - df["pre_close"]).abs() / (df["pre_close"] + eps)
+        if "intraday_momentum" in self.feature_cols and "open" in df.columns and "close" in df.columns:
+            df["intraday_momentum"] = (df["close"] - df["open"]) / (df["open"] + eps)
 
         self.dates = sorted(df["trade_date"].unique())
         self.stocks = sorted(df["ts_code"].unique())
@@ -151,6 +163,8 @@ class PortfolioEnv(gym.Env):
         self.current_step = 0
         self.current_weights = np.zeros(self.n_stocks, dtype=np.float32)
         self.portfolio_value = self.initial_cash
+        self.portfolio_peak = self.initial_cash
+        self.portfolio_returns = []  # 用于跟踪近期波动
         return self._get_obs(), {}
 
     def step(self, action):
@@ -174,7 +188,23 @@ class PortfolioEnv(gym.Env):
         # --- reward ----------------------------------------------------
         gross_return = portfolio_return - cost
         self.portfolio_value *= 1.0 + gross_return
-        reward = np.log(1.0 + gross_return + 1e-8)
+        base_reward = np.log(1.0 + gross_return + 1e-8)
+
+        # ---- risk penalties (Phase C3) ---------------------------------
+        penalty = 0.0
+
+        # 回撤惩罚：组合净值低于历史峰值时惩罚
+        if self.drawdown_penalty > 0:
+            self.portfolio_peak = max(self.portfolio_peak, self.portfolio_value)
+            drawdown = (self.portfolio_peak - self.portfolio_value) / self.portfolio_peak
+            penalty += self.drawdown_penalty * drawdown
+
+        # 集中度惩罚：权重越集中（HHI 越高）惩罚越大
+        if self.concentration_penalty > 0:
+            hhi = float(np.sum(target_weights ** 2))  # 1/N ~ 1
+            penalty += self.concentration_penalty * hhi
+
+        reward = base_reward - penalty
 
         # --- advance state ---------------------------------------------
         self.current_weights = target_weights
